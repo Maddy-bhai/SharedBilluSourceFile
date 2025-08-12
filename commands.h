@@ -1,4 +1,7 @@
 #pragma once
+#include "lcd_compat.h"
+#include "status_ui.h"
+
 #define MAX_QUEUE 10
 String commandQueue[MAX_QUEUE];
 int queueStart = 0;
@@ -81,33 +84,60 @@ void handleSerialCommands() {
 
 // ✅ Processor
 void processCommand(String cmd) {
-    if (cmd == "CMD:STOP") { currentEffect = NONE; return; }
+
+    // Eyes (OLED) command path first
+    if (Eyes_tryHandleCommand(cmd)) return;
+
+    // =====================
+    // ⏹ STOP / ▶ CONTINUE
+    // =====================
+    if (cmd == "CMD:STOP") { 
+        currentEffect = NONE; 
+        statusShow("Stopped", 800);
+        return; 
+    }
 
     if (cmd == "CMD:CONTINUE") {
         if (lastBasePattern != "") {
             basePattern = lastBasePattern;
             refreshCurrentPattern();
             Serial.println("▶️ Pattern resumed");
+            statusShow("Pattern resumed", 900);
         }
         if (lastEffect != NONE) {
             currentEffect = lastEffect;
             resetEffectState();
             Serial.print("▶️ Effect resumed: ");
             Serial.println(effectName(currentEffect));
+            showEffect(effectName(currentEffect));
         }
         return;
     }
 
-    // 🎨 Colors and Patterns
-    if (cmd.startsWith("CMD:RGB="))       { handleRGB(cmd); return; }
-    if (cmd.startsWith("CMD:RGBN="))      { handleRGBN(cmd); return; }
-    if (cmd.startsWith("CMD:COLOR="))     { handleCOLOR(cmd); return; }
-    if (cmd.startsWith("CMD:COLORN="))    { handleCOLORN(cmd); return; }
-    if (cmd.startsWith("CMD:COLOR+="))    { addColorToMulti(cmd.substring(11)); return; }
-    if (cmd.startsWith("CMD:COLOR-="))    { removeColorFromMulti(cmd.substring(11)); return; }
-    if (cmd.startsWith("CMD:PATTERN="))   { handlePattern(cmd); return; }
+    // =====================
+    // 🎨 Colors and Patterns (with status)
+    // =====================
+    if (cmd.startsWith("CMD:RGB=")) {
+        // show RGB first (parse quickly), then delegate to handler
+        String p = cmd.substring(8);
+        int c1 = p.indexOf(','), c2 = p.indexOf(',', c1 + 1);
+        int r = p.substring(0, c1).toInt();
+        int g = p.substring(c1 + 1, c2).toInt();
+        int b = p.substring(c2 + 1).toInt();
+        showRGB(r, g, b);
+        handleRGB(cmd);
+        return;
+    }
+    if (cmd.startsWith("CMD:RGBN="))      { statusShow("Palette updated", 900); handleRGBN(cmd); return; }
+    if (cmd.startsWith("CMD:COLOR="))     { String c = cmd.substring(10); showColor(c); handleCOLOR(cmd); return; }
+    if (cmd.startsWith("CMD:COLORN="))    { statusShow("Palette set", 900); handleCOLORN(cmd); return; }
+    if (cmd.startsWith("CMD:COLOR+="))    { String c = cmd.substring(11); addColorToMulti(c); statusShow("Added "+c, 900); return; }
+    if (cmd.startsWith("CMD:COLOR-="))    { String c = cmd.substring(11); removeColorFromMulti(c); statusShow("Removed "+c, 900); return; }
+    if (cmd.startsWith("CMD:PATTERN="))   { String p = cmd.substring(12); handlePattern(cmd); statusShow("Pattern → "+p, 1000); return; }
 
-    // ✨ Effects
+    // =====================
+    // ✨ Effects (with status)
+    // =====================
     if (cmd.startsWith("CMD:EFFECT=")) {
         stopScrollMode();
         String effect = cmd.substring(11);
@@ -137,6 +167,7 @@ void processCommand(String cmd) {
         else if (effect == "rain")          { currentEffect = RAIN; effectSpeed = 50; shimmerActive = false; }
 
         lastEffect = currentEffect;
+        showEffect(effect);     // <-- OLED status line
         return;
     }
 
@@ -144,30 +175,33 @@ void processCommand(String cmd) {
     // =====================
     // 💡 LED STRIP ON/OFF
     // =====================
-if (cmd == "CMD:LED=ON") {
-    ledState = true;
-    stopScrollMode();
-    currentEffect = NONE;        // don’t fight with effects
+    if (cmd == "CMD:LED=ON") {
+        ledState = true;
+        stopScrollMode();
+        currentEffect = NONE;        // don’t fight with effects
 
-    if (multiColorCount > 0) {
-        // If a basePattern was set earlier, re-apply it; else draw blocks
-        if (basePattern == "stripe")      patternStripe();
-        else if (basePattern == "gradient") patternGradient();
-        else if (basePattern == "split")    patternSplit();
-        else                                renderMultiColorsBlock();
-    } else {
-        // Single-color mode
-        compositeMode = false;   // ensure legacy 2-color mode is off
-        fillAll(currentColor);
+        if (multiColorCount > 0) {
+            // If a basePattern was set earlier, re-apply it; else draw blocks
+            if (basePattern == "stripe")        patternStripe();
+            else if (basePattern == "gradient") patternGradient();
+            else if (basePattern == "split")    patternSplit();
+            else                                renderMultiColorsBlock();
+        } else {
+            // Single-color mode
+            compositeMode = false;   // ensure legacy 2-color mode is off
+            fillAll(currentColor);
+        }
+
+        showLED(true);               // <-- OLED status line
+        return;
     }
-    return;
-}
 
     if (cmd == "CMD:LED=OFF") { 
         ledState = false; 
         currentEffect = NONE; 
         strip.clear(); 
         strip.show(); 
+        showLED(false);              // <-- OLED status line
         return; 
     }
 
@@ -181,13 +215,13 @@ if (cmd == "CMD:LED=ON") {
     }
 
     // =====================
-    // 🎨 COLOR & PATTERN HANDLERS
+    // 🎨 COLOR & PATTERN HANDLERS (duplicate path kept)
     // =====================
-    if (cmd.startsWith("CMD:RGB="))       { handleRGB(cmd); return; }
-    if (cmd.startsWith("CMD:RGBN="))      { handleRGBN(cmd); return; }
-    if (cmd.startsWith("CMD:COLOR="))     { handleCOLOR(cmd); return; }
-    if (cmd.startsWith("CMD:COLORN="))    { handleCOLORN(cmd); return; }
-    if (cmd.startsWith("CMD:PATTERN="))   { handlePattern(cmd); return; }
+    if (cmd.startsWith("CMD:RGB="))       { String p = cmd.substring(8); int c1=p.indexOf(','), c2=p.indexOf(',',c1+1); showRGB(p.substring(0,c1).toInt(), p.substring(c1+1,c2).toInt(), p.substring(c2+1).toInt()); handleRGB(cmd); return; }
+    if (cmd.startsWith("CMD:RGBN="))      { statusShow("Palette updated", 900); handleRGBN(cmd); return; }
+    if (cmd.startsWith("CMD:COLOR="))     { String c = cmd.substring(10); showColor(c); handleCOLOR(cmd); return; }
+    if (cmd.startsWith("CMD:COLORN="))    { statusShow("Palette set", 900); handleCOLORN(cmd); return; }
+    if (cmd.startsWith("CMD:PATTERN="))   { String p = cmd.substring(12); handlePattern(cmd); statusShow("Pattern → "+p, 1000); return; }
 
     // =====================
     // 🔆 BRIGHTNESS
@@ -196,18 +230,18 @@ if (cmd == "CMD:LED=ON") {
         brightnessPct = constrain(cmd.substring(15).toInt(), 0, 100);
         brightness = map(brightnessPct, 0, 100, 0, 255);
         strip.setBrightness(brightness);
-if (ledState && !scrollMode) {
-    if (multiColorCount > 0) {
-        if (basePattern == "stripe")      patternStripe();
-        else if (basePattern == "gradient") patternGradient();
-        else if (basePattern == "split")    patternSplit();
-        else                                renderMultiColorsBlock();
-    } else {
-        fillAll(currentColor);
-    }
-}
-
+        if (ledState && !scrollMode) {
+            if (multiColorCount > 0) {
+                if (basePattern == "stripe")        patternStripe();
+                else if (basePattern == "gradient") patternGradient();
+                else if (basePattern == "split")    patternSplit();
+                else                                renderMultiColorsBlock();
+            } else {
+                fillAll(currentColor);
+            }
+        }
         Serial.print("🔆 Brightness set: "); Serial.println(brightnessPct);
+        showBrightness(brightnessPct);     // <-- OLED status line
         return;
     }
 
@@ -221,6 +255,7 @@ if (ledState && !scrollMode) {
             strip.clear(); 
             strip.setPixelColor(i, currentColor); 
             strip.show();
+            showLedIndex(i);              // <-- OLED status line
         }
         return;
     }
@@ -231,17 +266,19 @@ if (ledState && !scrollMode) {
         ledStart = 0;
         ledEnd = activeLEDCount > 0 ? activeLEDCount - 1 : 0;
         Serial.print("Active LEDs: "); Serial.println(activeLEDCount);
-if (ledState && !scrollMode) {
-    if (multiColorCount > 0) {
-        if (basePattern == "stripe")      patternStripe();
-        else if (basePattern == "gradient") patternGradient();
-        else if (basePattern == "split")    patternSplit();
-        else                                renderMultiColorsBlock();
-    } else {
-        fillAll(currentColor);
-    }
-}
 
+        if (ledState && !scrollMode) {
+            if (multiColorCount > 0) {
+                if (basePattern == "stripe")        patternStripe();
+                else if (basePattern == "gradient") patternGradient();
+                else if (basePattern == "split")    patternSplit();
+                else                                renderMultiColorsBlock();
+            } else {
+                fillAll(currentColor);
+            }
+        }
+
+        showNumLeds(activeLEDCount);       // <-- OLED status line
         return;
     }
 
@@ -257,23 +294,24 @@ if (ledState && !scrollMode) {
             ledEnd = e;
             activeLEDCount = e - s + 1;
             Serial.print("LED Range: "); Serial.print(ledStart); Serial.print(" to "); Serial.println(ledEnd);
-if (ledState && !scrollMode) {
-    if (multiColorCount > 0) {
-        if (basePattern == "stripe")      patternStripe();
-        else if (basePattern == "gradient") patternGradient();
-        else if (basePattern == "split")    patternSplit();
-        else                                renderMultiColorsBlock();
-    } else {
-        fillAll(currentColor);
-    }
-}
 
+            if (ledState && !scrollMode) {
+                if (basePattern == "stripe")        patternStripe();
+                else if (basePattern == "gradient") patternGradient();
+                else if (basePattern == "split")    patternSplit();
+                else                                renderMultiColorsBlock();
+            } else {
+                fillAll(currentColor);
+            }
+
+            statusShow("Range: " + String(s) + "–" + String(e), 900);   // <-- OLED status line
         }
         return;
     }
 
-if (cmd.startsWith("CMD:COLOR+=")) { addColorToMulti(cmd.substring(11)); return; }
-if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); return; }
+    // (these add/remove were already handled above; keeping here is harmless)
+    if (cmd.startsWith("CMD:COLOR+=")) { String c = cmd.substring(11); addColorToMulti(c); statusShow("Added "+c, 900); return; }
+    if (cmd.startsWith("CMD:COLOR-=")) { String c = cmd.substring(11); removeColorFromMulti(c); statusShow("Removed "+c, 900); return; }
 
 
     // =====================
@@ -292,11 +330,12 @@ if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); re
             subMood = "default";
         }
         applyMood(resolveMoodType(primary), subMood);
+        statusShow("Mood → " + primary + ":" + subMood, 1000);
         return;
     }
 
     // =====================
-    // 🌧 RAIN MODES
+    // 🌧 RAIN MODES (status on OLED)
     // =====================
     if (cmd.startsWith("CMD:RAIN=")) {
         rainMode = cmd.substring(9);
@@ -305,26 +344,26 @@ if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); re
         if (rainMode == "light") {
             rainIntensity = 2;
             currentEffect = RAIN;
-            lcd.clear(); lcd.print("☔ Rain: Light");
+            statusShow("☔ Rain: Light", 1000);
         } 
         else if (rainMode == "medium") {
             rainIntensity = 4;
             currentEffect = RAIN;
-            lcd.clear(); lcd.print("🌦 Rain: Medium");
+            statusShow("🌦 Rain: Medium", 1000);
         } 
         else if (rainMode == "heavy") {
             rainIntensity = 6;
             currentEffect = RAIN;
-            lcd.clear(); lcd.print("🌧 Rain: Heavy");
+            statusShow("🌧 Rain: Heavy", 1000);
         } 
         else if (rainMode == "thunderstorm") {
             rainIntensity = 4;  
             currentEffect = RAIN;
-            lcd.clear(); lcd.print("⛈ Thunderstorm");
+            statusShow("⛈ Thunderstorm", 1000);
         }
         else {
             Serial.println("❗ Unknown rain mode");
-            lcd.clear(); lcd.print("❌ Invalid rain mode");
+            statusShow("❌ Invalid rain mode", 1000);
         }
         return;
     }
@@ -335,12 +374,14 @@ if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); re
     if (cmd.startsWith("CMD:SPEED=DEFAULT")) {
         customSpeed = false;
         Serial.println("Speed reset to default.");
+        statusShow("Speed: default", 900);
         return;
     }
     if (cmd.startsWith("CMD:SPEED=")) {
         effectSpeed = constrain(cmd.substring(10).toInt(), 1, 1000);
         customSpeed = true;
         Serial.print("Custom Speed: "); Serial.println(effectSpeed);
+        showSpeed(effectSpeed);     // <-- OLED status line
         return;
     }
 
@@ -377,8 +418,7 @@ if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); re
         } 
         else {
             Serial.println("❗ Unknown region keyword");
-            lcd.clear();
-            lcd.print("❌ Region invalid");
+            statusShow("❌ Region invalid", 1000);
             return;
         }
 
@@ -387,18 +427,18 @@ if (cmd.startsWith("CMD:COLOR-=")) { removeColorFromMulti(cmd.substring(11)); re
         strip.show();
 
         Serial.print("✅ Region set: "); Serial.print(ledStart); Serial.print(" to "); Serial.println(ledEnd);
-        lcd.clear(); lcd.print("Region: "); lcd.setCursor(0, 1); lcd.print(region);
+        statusShow("Region: " + region, 1000);
 
-if (ledState && !scrollMode) {
-    if (multiColorCount > 0) {
-        if (basePattern == "stripe")      patternStripe();
-        else if (basePattern == "gradient") patternGradient();
-        else if (basePattern == "split")    patternSplit();
-        else                                renderMultiColorsBlock();
-    } else {
-        fillAll(currentColor);
-    }
-}
+        if (ledState && !scrollMode) {
+            if (multiColorCount > 0) {
+                if (basePattern == "stripe")        patternStripe();
+                else if (basePattern == "gradient") patternGradient();
+                else if (basePattern == "split")    patternSplit();
+                else                                renderMultiColorsBlock();
+            } else {
+                fillAll(currentColor);
+            }
+        }
 
         return;
     }
@@ -417,19 +457,21 @@ if (ledState && !scrollMode) {
 
             if (device == "light") {
                 digitalWrite(LIGHT_RELAY, (state == "on") ? HIGH : LOW);
-                lcd.clear(); lcd.print("Light → " + state);
                 Serial.println("✅ LIGHT → " + state);
+                statusShow("Light → " + state, 1000);
             } 
             else if (device == "fan") {
                 digitalWrite(FAN_RELAY, (state == "on") ? HIGH : LOW);
-                lcd.clear(); lcd.print("Fan → " + state);
                 Serial.println("✅ FAN → " + state);
+                statusShow("Fan → " + state, 1000);
             } 
             else {
                 Serial.println("❗ Unknown relay device: " + device);
+                statusShow("❌ Unknown device", 900);
             }
         } else {
             Serial.println("❗ CMD:RELAYSWITCH format error");
+            statusShow("❌ Relay format", 900);
         }
         return;
     }

@@ -2,6 +2,7 @@
 // =====================
 // 🔧 Billu Utility Functions
 // =====================
+#include "lcd_compat.h"
 
 // 🌈 Composite Color Mode (global flags)
 extern bool compositeMode;
